@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YT Thumbnail Downloader</title>
+<style>
+  :root { --bg:#f6f6f4; --card:#fff; --text:#1a1a1a; --muted:#6b6b6b; --accent:#d93025; --border:#e2e2de; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#141414; --card:#1e1e1e; --text:#f0f0f0; --muted:#9a9a9a; --border:#333; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:20px 16px 40px; background:var(--bg); color:var(--text);
+         font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+  main { max-width:640px; margin:0 auto; }
+  h1 { font-size:1.4rem; margin:0 0 16px; }
+  .row { display:flex; gap:8px; }
+  input { flex:1; min-width:0; padding:12px; font-size:1rem; border:1px solid var(--border);
+          border-radius:10px; background:var(--card); color:var(--text); }
+  button { padding:12px 16px; font-size:1rem; border:0; border-radius:10px; cursor:pointer;
+           background:var(--accent); color:#fff; font-weight:600; }
+  #msg { color:var(--accent); min-height:1.3em; margin:10px 0; font-size:.9rem; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:12px;
+          padding:12px; margin-top:14px; }
+  .card img { width:100%; border-radius:8px; display:block; background:var(--border); }
+  .meta { display:flex; justify-content:space-between; align-items:center; margin-top:10px; gap:8px; }
+  .meta span { font-size:.9rem; color:var(--muted); }
+  .meta button { padding:10px 16px; font-size:.95rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>YouTube Thumbnail Downloader</h1>
+  <div class="row">
+    <input id="url" type="url" placeholder="Paste YouTube link…" autocomplete="off" autofocus>
+    <button id="go">Get</button>
+  </div>
+  <div id="msg"></div>
+  <div id="out"></div>
+</main>
+
+<script>
+// Highest resolution first. Some older/low-res uploads have no maxres file,
+// in which case the best one YouTube actually has is used.
+const BEST_FIRST = ["maxresdefault", "sddefault", "hqdefault"];
+
+function extractId(input) {
+  input = input.trim();
+  if (/^[\w-]{11}$/.test(input)) return input;
+  try {
+    const u = new URL(input.startsWith("http") ? input : "https://" + input);
+    const host = u.hostname.replace(/^(www\.|m\.|music\.)/, "");
+    if (host === "youtu.be") return u.pathname.slice(1).split("/")[0] || null;
+    if (host.endsWith("youtube.com") || host.endsWith("youtube-nocookie.com")) {
+      if (u.searchParams.get("v")) return u.searchParams.get("v");
+      const m = u.pathname.match(/^\/(shorts|embed|live|v)\/([\w-]{11})/);
+      if (m) return m[2];
+    }
+  } catch (e) {}
+  return null;
+}
+
+const $ = id => document.getElementById(id);
+
+function probe(src) {
+  // A missing maxres thumbnail is a 120x90 placeholder or fails to load.
+  return new Promise(resolve => {
+    const img = new Image();
+    img.onload = () => resolve(img.naturalWidth > 120 ? img : null);
+    img.onerror = () => resolve(null);
+    img.src = src;
+  });
+}
+
+async function download(url, filename, btn) {
+  const old = btn.textContent;
+  btn.textContent = "…";
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error("bad response");
+    const blob = await res.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  } catch (e) {
+    // Fallback: open the image so it can be saved manually (long-press on mobile).
+    window.open(url, "_blank");
+  }
+  btn.textContent = old;
+}
+
+async function run() {
+  const msg = $("msg"), out = $("out");
+  msg.textContent = ""; out.innerHTML = "";
+  const id = extractId($("url").value);
+  if (!id) { msg.textContent = "Couldn't find a video ID in that link."; return; }
+  msg.style.color = "var(--muted)";
+  msg.textContent = "Loading…";
+
+  let best = null;
+  for (const key of BEST_FIRST) {
+    const url = `https://i.ytimg.com/vi/${id}/${key}.jpg`;
+    const img = await probe(url);
+    if (img) { best = { key, url, w: img.naturalWidth, h: img.naturalHeight }; break; }
+  }
+
+  msg.style.color = "var(--accent)";
+  if (!best) { msg.textContent = "No thumbnail found. Is the video public?"; return; }
+  msg.textContent = "";
+
+  const card = document.createElement("div");
+  card.className = "card";
+  card.innerHTML = `
+    <img src="${best.url}" alt="Thumbnail">
+    <div class="meta">
+      <span>${best.w}×${best.h}</span>
+      <button>Download</button>
+    </div>`;
+  card.querySelector("button").onclick = e =>
+    download(best.url, `${id}_thumbnail.jpg`, e.target);
+  out.appendChild(card);
+}
+
+$("go").onclick = run;
+$("url").addEventListener("keydown", e => { if (e.key === "Enter") run(); });
+$("url").addEventListener("paste", () => setTimeout(run, 50));
+</script>
+</body>
+</html>
