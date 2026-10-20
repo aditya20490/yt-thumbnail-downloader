@@ -1,6 +1,9 @@
 package com.ytthumb.downloader;
 
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.ContentValues;
+import android.content.Context;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Environment;
@@ -13,9 +16,14 @@ import android.widget.Toast;
 import com.getcapacitor.BridgeActivity;
 import com.getcapacitor.BridgeWebViewClient;
 
+import org.json.JSONObject;
+
 import java.io.OutputStream;
 
 public class MainActivity extends BridgeActivity {
+
+    private boolean pageLoaded = false;
+    private String lastHandled = "";
 
     private static final String HOOK_JS =
         "(function(){" +
@@ -47,8 +55,39 @@ public class MainActivity extends BridgeActivity {
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
                 view.evaluateJavascript(HOOK_JS, null);
+                pageLoaded = true;
+                pasteFromClipboard();
             }
         });
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) {
+            pasteFromClipboard();
+        }
+    }
+
+    private void pasteFromClipboard() {
+        if (!pageLoaded) return;
+        try {
+            ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+            if (cm == null || !cm.hasPrimaryClip()) return;
+            ClipData clip = cm.getPrimaryClip();
+            if (clip == null || clip.getItemCount() == 0) return;
+            CharSequence cs = clip.getItemAt(0).coerceToText(this);
+            if (cs == null) return;
+            String text = cs.toString().trim();
+            if (!text.contains("youtu") || text.equals(lastHandled)) return;
+            lastHandled = text;
+
+            String js = "(function(){var i=document.getElementById('url');" +
+                "if(!i||typeof run!=='function')return;" +
+                "i.value=" + JSONObject.quote(text) + ";run();})();";
+            getBridge().getWebView().evaluateJavascript(js, null);
+        } catch (Exception ignored) {
+        }
     }
 
     private class Saver {
