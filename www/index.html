@@ -19,6 +19,8 @@
           border-radius:10px; background:var(--card); color:var(--text); }
   button { padding:12px 16px; font-size:1rem; border:0; border-radius:10px; cursor:pointer;
            background:var(--accent); color:#fff; font-weight:600; }
+  button.alt { background:var(--border); color:var(--text); }
+  button:disabled { opacity:.45; }
   #msg { color:var(--accent); min-height:1.3em; margin:10px 0; font-size:.9rem; }
   .card { background:var(--card); border:1px solid var(--border); border-radius:12px;
           padding:12px; margin-top:14px; }
@@ -26,6 +28,15 @@
   .meta { display:flex; justify-content:space-between; align-items:center; margin-top:10px; gap:8px; }
   .meta span { font-size:.9rem; color:var(--muted); }
   .meta button { padding:10px 16px; font-size:.95rem; }
+  .small { font-size:.85rem; color:var(--muted); margin:8px 0; }
+  select { width:100%; margin-top:10px; padding:12px; font-size:1rem; border:1px solid var(--border);
+           border-radius:10px; background:var(--card); color:var(--text); }
+  pre { white-space:pre-wrap; word-break:break-word; font-size:.85rem; line-height:1.5; max-height:300px;
+        overflow:auto; background:var(--bg); border:1px solid var(--border); border-radius:8px;
+        padding:10px; margin:10px 0; user-select:text; -webkit-user-select:text; }
+  .btns { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .btns button { padding:12px 8px; font-size:.95rem; }
+  .btns button.wide { grid-column:1 / -1; }
 </style>
 </head>
 <body>
@@ -37,6 +48,7 @@
   </div>
   <div id="msg"></div>
   <div id="out"></div>
+  <div id="lyrics"></div>
 </main>
 
 <script>
@@ -93,9 +105,202 @@ async function download(url, filename, btn) {
   btn.textContent = old;
 }
 
+/* ---------- lyrics / subtitles ---------- */
+
+let runId = 0;
+const pending = {};
+window.__capDone = (cb, payload) => {
+  const f = pending[cb];
+  if (f) { delete pending[cb]; f(JSON.parse(payload)); }
+};
+
+function ask(kind, arg) {
+  return new Promise(resolve => {
+    if (typeof AndroidCaptions === "undefined") {
+      resolve({ ok: false, error: "Lyrics only work inside the app." });
+      return;
+    }
+    const cb = "c" + Math.random().toString(36).slice(2);
+    pending[cb] = resolve;
+    AndroidCaptions[kind](arg, cb);
+    setTimeout(() => {
+      if (pending[cb]) {
+        delete pending[cb];
+        resolve({ ok: false, error: "YouTube took too long to answer. Try again." });
+      }
+    }, 40000);
+  });
+}
+
+const decodeHtml = s => { const e = document.createElement("textarea"); e.innerHTML = s; return e.value; };
+
+function parseJson3(txt) {
+  const j = JSON.parse(txt);
+  const out = [];
+  for (const ev of (j.events || [])) {
+    if (!ev.segs) continue;
+    const t = ev.segs.map(s => s.utf8 || "").join("").replace(/\s+/g, " ").trim();
+    if (!t) continue;
+    out.push({ s: (ev.tStartMs || 0) / 1000, d: (ev.dDurationMs || 0) / 1000, t });
+  }
+  return out;
+}
+
+function parseXml(txt) {
+  const doc = new DOMParser().parseFromString(txt, "text/xml");
+  const out = [];
+  const texts = doc.querySelectorAll("text");
+  if (texts.length) {
+    texts.forEach(n => {
+      const t = decodeHtml(n.textContent || "").replace(/\s+/g, " ").trim();
+      if (!t) return;
+      out.push({ s: parseFloat(n.getAttribute("start") || "0"), d: parseFloat(n.getAttribute("dur") || "0"), t });
+    });
+  } else {
+    doc.querySelectorAll("p").forEach(n => {
+      const t = decodeHtml(n.textContent || "").replace(/\s+/g, " ").trim();
+      if (!t) return;
+      out.push({ s: parseFloat(n.getAttribute("t") || "0") / 1000, d: parseFloat(n.getAttribute("d") || "0") / 1000, t });
+    });
+  }
+  return out;
+}
+
+const pad = (n, l = 2) => String(n).padStart(l, "0");
+
+function lrcTime(sec) {
+  const cs = Math.max(0, Math.round(sec * 100));
+  const m = Math.floor(cs / 6000), r = cs % 6000;
+  return "[" + pad(m) + ":" + pad(Math.floor(r / 100)) + "." + pad(r % 100) + "]";
+}
+
+function srtTime(sec) {
+  const ms = Math.max(0, Math.round(sec * 1000));
+  const h = Math.floor(ms / 3600000), m = Math.floor(ms / 60000) % 60, s = Math.floor(ms / 1000) % 60;
+  return pad(h) + ":" + pad(m) + ":" + pad(s) + "," + pad(ms % 1000, 3);
+}
+
+function toLrc(lines, title) {
+  const head = title ? "[ti:" + title + "]\n" : "";
+  return head + lines.map(l => lrcTime(l.s) + " " + l.t).join("\n");
+}
+
+function toSrt(lines) {
+  return lines.map((l, i) => {
+    const next = lines[i + 1];
+    let end = l.d > 0 ? l.s + l.d : (next ? next.s : l.s + 3);
+    if (next && end > next.s) end = next.s;
+    if (end <= l.s) end = l.s + 0.5;
+    return (i + 1) + "\n" + srtTime(l.s) + " --> " + srtTime(end) + "\n" + l.t + "\n";
+  }).join("\n");
+}
+
+function saveText(text, filename) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], { type: "application/octet-stream" }));
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (e) {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    ta.remove();
+  }
+}
+
+async function loadLyrics(id, my) {
+  const box = $("lyrics");
+  box.innerHTML = '<div class="card"><b>Lyrics / subtitles</b><div class="small">Looking for captions…</div></div>';
+
+  const info = await ask("tracks", id);
+  if (my !== runId) return;
+  if (!info.ok) {
+    box.innerHTML = '<div class="card"><b>Lyrics / subtitles</b><div class="small"></div></div>';
+    box.querySelector(".small").textContent = info.error || "Could not get captions.";
+    return;
+  }
+
+  const tracks = info.tracks;
+  let first = tracks.findIndex(t => !t.auto);
+  if (first < 0) first = 0;
+  const safe = (info.title || id).replace(/[\\/:*?"<>|]/g, "").replace(/\s+/g, " ").trim().slice(0, 80) || id;
+
+  box.innerHTML =
+    '<div class="card"><b>Lyrics / subtitles</b>' +
+    '<select id="lySel"></select>' +
+    '<div class="small" id="lyMsg"></div>' +
+    '<pre id="lyPrev"></pre>' +
+    '<div class="btns">' +
+    '<button id="lyLrc">Download .lrc</button>' +
+    '<button id="lySrt" class="alt">Download .srt</button>' +
+    '<button id="lyCopy" class="alt wide">Copy text</button>' +
+    '</div></div>';
+
+  const sel = $("lySel"), lyMsg = $("lyMsg"), prev = $("lyPrev");
+  const bLrc = $("lyLrc"), bSrt = $("lySrt"), bCopy = $("lyCopy");
+  let cur = null;
+
+  tracks.forEach((t, i) => {
+    const o = document.createElement("option");
+    o.value = i;
+    o.textContent = (t.name || t.lang) + (t.auto ? " (auto-generated)" : "");
+    sel.appendChild(o);
+  });
+  sel.value = first;
+
+  async function showTrack(i) {
+    cur = null;
+    bLrc.disabled = bSrt.disabled = bCopy.disabled = true;
+    prev.textContent = "";
+    lyMsg.textContent = "Getting the lyrics…";
+    const r = await ask("text", tracks[i].url);
+    if (my !== runId) return;
+    if (!r.ok || !r.body || !r.body.trim()) {
+      lyMsg.textContent = r.error || "YouTube sent back an empty file for this one. Try another language in the list, or try again in a bit.";
+      return;
+    }
+    let lines = [];
+    try { lines = r.body.trim().startsWith("{") ? parseJson3(r.body) : parseXml(r.body); } catch (e) {}
+    if (!lines.length) {
+      lyMsg.textContent = "That caption track came back empty. Try another one in the list.";
+      return;
+    }
+    cur = { lrc: toLrc(lines, info.title), srt: toSrt(lines), txt: lines.map(l => l.t).join("\n") };
+    prev.textContent = cur.lrc;
+    lyMsg.textContent = lines.length + " lines" + (tracks[i].auto ? " · auto-generated, so it can have mistakes" : "");
+    bLrc.disabled = bSrt.disabled = bCopy.disabled = false;
+  }
+
+  sel.onchange = () => showTrack(Number(sel.value));
+  bLrc.onclick = () => { if (cur) saveText(cur.lrc, safe + ".lrc"); };
+  bSrt.onclick = () => { if (cur) saveText(cur.srt, safe + ".srt"); };
+  bCopy.onclick = async () => {
+    if (!cur) return;
+    await copyText(cur.txt);
+    const old = bCopy.textContent;
+    bCopy.textContent = "Copied ✓";
+    setTimeout(() => { bCopy.textContent = old; }, 1500);
+  };
+
+  showTrack(first);
+}
+
+/* ---------- thumbnail ---------- */
+
 async function run() {
   const msg = $("msg"), out = $("out");
-  msg.textContent = ""; out.innerHTML = "";
+  msg.textContent = ""; out.innerHTML = ""; $("lyrics").innerHTML = "";
+  const my = ++runId;
   const id = extractId($("url").value);
   if (!id) { msg.textContent = "Couldn't find a video ID in that link."; return; }
   msg.style.color = "var(--muted)";
@@ -107,9 +312,14 @@ async function run() {
     const img = await probe(url);
     if (img) { best = { key, url, w: img.naturalWidth, h: img.naturalHeight }; break; }
   }
+  if (my !== runId) return;
 
   msg.style.color = "var(--accent)";
-  if (!best) { msg.textContent = "No thumbnail found. Is the video public?"; return; }
+  if (!best) {
+    msg.textContent = "No thumbnail found. Is the video public?";
+    loadLyrics(id, my);
+    return;
+  }
   msg.textContent = "";
 
   const card = document.createElement("div");
@@ -123,6 +333,8 @@ async function run() {
   card.querySelector("button").onclick = e =>
     download(best.url, `${id}_thumbnail.jpg`, e.target);
   out.appendChild(card);
+
+  loadLyrics(id, my);
 }
 
 $("go").onclick = run;
